@@ -2,10 +2,12 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const ai = new GoogleGenerativeAI("AIzaSyDNgzElKRfj370VWSnmtlVE1njuuxR4_QI");
 
-export async function interpretQuery(userQuery) {
+export async function interpretQuery(userQuery, history = []) {
+      const messagesForAI = [...history, { role: "user", content: userQuery }];
+
       const prompt = `
 Extract the following as JSON:
-- dataset: (groundwater-level | rainfall | temperature | groundwater-quality)
+- datasets: array of datasets (any of: groundwater-level | rainfall | temperature | groundwater-quality | soil-moisture | river-discharge | evapo-transpiration)
 - granularity: (state | district | station)
 - stateName (if any)
 - districtName (if any)
@@ -23,7 +25,7 @@ User query: "${userQuery}"
                   systemInstruction: "You are a strict JSON parser. Always return only valid JSON.",
             });
 
-            const response = await model.generateContent(prompt);
+            const response = await model.generateContent(prompt, { context: messagesForAI });
             let text = response.response.text().trim();
 
             // Cleanup Markdown wrappers
