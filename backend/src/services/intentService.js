@@ -1,29 +1,44 @@
-// services/intentService.js
 export function classifyIntent(userQuery, parsed, lastAssistant) {
-      const q = (userQuery || "").toLowerCase();
+      const q = (userQuery || "").toLowerCase().trim();
 
-      // quick checks for clarification / rephrase
-      const clarifKeywords = ["explain", "explain in", "simplify", "simpler", "again", "repeat", "shorter", "longer", "why", "how", "detail", "details", "more"];
+      // 0. If LLM parser gave an explicit intent → trust it
+      if (parsed?.intent) return parsed.intent;
+
+      // 1. Chitchat
+      const greetings = ["hi", "hello", "hey", "yo", "what's up", "who are you"];
+      if (greetings.some(g => q === g || q.includes(g))) return "chitchat";
+
+      // 2. Clarification / rephrase intent
+      const clarifKeywords = ["explain", "simplify", "again", "repeat", "shorter", "longer", "why", "how", "detail"];
       if (clarifKeywords.some(k => q.includes(k))) return "clarification";
 
-      // if user explicitly asks to "compare" or "contrast"
+      // 3. Compare intent
       if (/\b(compare|contrast|vs|versus|difference)\b/.test(q)) {
-            // treat as add-dataset if datasets present else clarification if no datasets
-            return (parsed?.datasets && parsed.datasets.length > 0) ? "add-dataset" : "clarification";
+            return (parsed?.datasets?.length > 0) ? "compare" : "clarification";
       }
 
-      // If parsed lists datasets
-      if (parsed?.datasets && parsed.datasets.length > 0) {
-            // If parsed contains no location/date info but we have lastAssistant context -> it's likely add-dataset
-            const hasNewLocationFields = ["stateName", "districtName", "stationName", "startdate", "enddate"].some(k => parsed[k]);
-            if (lastAssistant && !hasNewLocationFields) return "add-dataset";
-            return "new-query";
+      // 4. If parser failed
+      if (!parsed || Object.keys(parsed).length === 0) return "unknown";
+
+      // 5. Dataset changes
+      if (parsed?.datasets?.length > 0) {
+            const locationOrTimeChanged = ["stateName", "districtName", "stationName", "startdate", "enddate"].some(
+                  k => parsed[k] && parsed[k] !== (lastAssistant?.parsed?.[k] || null)
+            );
+
+            if (locationOrTimeChanged) return "new-query";
+
+            const datasetChanged =
+                  lastAssistant?.parsed?.datasets &&
+                  JSON.stringify(parsed.datasets.sort()) !== JSON.stringify(lastAssistant.parsed.datasets.sort());
+
+            if (datasetChanged) return "new-query";
+
+            return "add-dataset";
       }
 
-      // If parsed empty but query contains fetch words -> new query
+      // 6. Explicit fetch words
       if (/\b(show|get|fetch|give|data|report|chart)\b/.test(q)) return "new-query";
 
-      // default fallback -> clarification (safe)
       return "clarification";
 }
- 

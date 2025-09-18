@@ -2,41 +2,90 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const ai = new GoogleGenerativeAI("AIzaSyDNgzElKRfj370VWSnmtlVE1njuuxR4_QI");
 
-export async function interpretQuery(userQuery, history = []) {
-      const messagesForAI = [...history, { role: "user", content: userQuery }];
+export async function interpretQuery(userQuery, history = [], lastParsed = null) {
+      const historyText = history
+            .map((h) => `${h.role.toUpperCase()}: ${h.content}`)
+            .join("\n");
 
+      // Build base prompt
       const prompt = `
-Extract the following as JSON:
-- datasets: array of datasets (any of: groundwater-level | rainfall | temperature | groundwater-quality | soil-moisture | river-discharge | evapo-transpiration)
-- granularity: (state | district | station)
-- stateName (if any)
-- districtName (if any)
-- stationName (if any)
-- startdate (YYYY-MM-DD) or null
-- enddate (YYYY-MM-DD) or null
+You are a STRICT query parser for INGRES AI (water/climate assistant).
+Return ONLY valid JSON, never explanations.
 
-Return only valid JSON, no explanations or text.
-User query: "${userQuery}"
+Conversation so far:
+${historyText}
+
+The user now says: "${userQuery}"
+
+Previous context (if available):
+${lastParsed ? JSON.stringify(lastParsed) : "null"}
+
+RULES:
+- Only include datasets explicitly named by user.
+- If vague words ("that", "previous", "same", "it", "continue") → reuse fields from lastParsed.
+- If chit-chat (hi, ok, thanks) → intent="chitchat".
+- If unclear → intent="unknown".
+- If user says "compare" → intent="compare" + fill compareContexts.
+- If user says "add X" → intent="add-dataset".
+- Default intent → "new-query".
+
+JSON schema:
+{
+  "intent": "new-query" | "clarification" | "compare" | "add-dataset" | "chitchat" | "unknown",
+  "resetContext": true/false,
+  "needsClarification": true/false,
+  "datasets": ["groundwater-level","rainfall","temperature","soil-moisture","river-discharge","evapo-transpiration"],
+  "granularity": "state" | "district" | "station" | null,
+  "stateName": string | null,
+  "districtName": string | null,
+  "stationName": string | null,
+  "startdate": "YYYY-MM-DD" | null,
+  "enddate": "YYYY-MM-DD" | null,
+  "compareContexts": [ { ...same schema... }, { ...same schema... } ] | null
+}
 `;
 
       try {
             const model = ai.getGenerativeModel({
                   model: "gemini-1.5-flash",
-                  systemInstruction: "You are a strict JSON parser. Always return only valid JSON.",
+                  systemInstruction: "Return ONLY valid JSON. Never add text outside JSON.",
             });
 
-            const response = await model.generateContent(prompt, { context: messagesForAI });
+            const response = await model.generateContent(prompt);
             let text = response.response.text().trim();
 
-            // Cleanup Markdown wrappers
-            if (text.startsWith("```json")) {
-                  text = text.replace(/^```json/, "").replace(/```$/, "").trim();
-            } else if (text.startsWith("```")) {
-                  text = text.replace(/^```/, "").replace(/```$/, "").trim();
+            if (text.startsWith("```")) {
+                  text = text.replace(/```(json)?/, "").replace(/```$/, "").trim();
             }
 
-            return JSON.parse(text);
+            const parsed = JSON.parse(text);
+
+            // 🔑 Merge with lastParsed if needed
+            if (lastParsed && parsed.intent === "new-query") {
+                  // If user left some fields empty → reuse from lastParsed
+                  parsed.stateName = parsed.stateName || lastParsed.stateName;
+                  parsed.districtName = parsed.districtName || lastParsed.districtName;
+                  parsed.stationName = parsed.stationName || lastParsed.stationName;
+                  parsed.startdate = parsed.startdate || lastParsed.startdate;
+                  parsed.enddate = parsed.enddate || lastParsed.enddate;
+                  parsed.datasets = parsed.datasets?.length ? parsed.datasets : lastParsed.datasets;
+            }
+
+            return parsed;
       } catch (e) {
-            return { error: `Gemini parse failed: ${e.message}` };
+            console.error("❌ interpretQuery failed:", e.message);
+            return {
+                  intent: "unknown",
+                  resetContext: false,
+                  needsClarification: false,
+                  datasets: [],
+                  stateName: null,
+                  districtName: null,
+                  stationName: null,
+                  startdate: null,
+                  enddate: null,
+                  compareContexts: null,
+                  error: `Gemini parse failed: ${e.message}`,
+            };
       }
 }
